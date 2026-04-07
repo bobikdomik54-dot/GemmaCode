@@ -23,4 +23,5 @@ export const state = {
   ragLimit: parseInt(process.env.OPENAI_RAG_LIMIT || "8", 10),
   memoryLimit: parseInt(process.env.OPENAI_MEMORY_LIMIT || "4", 10),
   maxToolRounds: parseInt(process.env.OPENAI_MAX_TOOL_ROUNDS || "6", 10),
+  scannedProjectDir: null,
 };

@@ -10,6 +10,7 @@ import { ui } from "./ui.js";
 import { buildProjectContext, buildRetrievalContext, buildSystemPrompt } from "./tooling.js";
 import { searchProject, searchMemories } from "./vector_store.js";
 import { LANGCHAIN_TOOLS } from "./langchain_tools.js";
+import * as listDirTool from "./tools/list_dir.js";
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -215,6 +216,24 @@ export async function runWithTools(userInput, write = process.stdout.write.bind(
   let finalAnswer = "";
 
   try {
+    if (state.projectDir && state.scannedProjectDir !== state.projectDir) {
+      onStatus("inspecting tree");
+      try {
+        const tree = await listDirTool.run({ path: ".", depth: 2, max_entries: 180 });
+        if (!String(tree).startsWith("ERROR:")) {
+          messages.splice(1, 0, new SystemMessage(`Auto project tree snapshot:\n${tree}`));
+          state.scannedProjectDir = state.projectDir;
+          toolTrace.push({
+            tool: "list_dir",
+            args: { path: ".", depth: 2, max_entries: 180, auto: true },
+            result: tree,
+          });
+        }
+      } catch {
+        // Skip preflight on failure and continue regular tool flow.
+      }
+    }
+
     for (let round = 0; round < state.maxToolRounds; round++) {
       if (aborted) break;
 

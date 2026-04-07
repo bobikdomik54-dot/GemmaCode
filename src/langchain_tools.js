@@ -6,8 +6,9 @@ import * as applyPatch from "./tools/apply_patch.js";
 import * as listDir from "./tools/list_dir.js";
 import * as webSearch from "./tools/web_search.js";
 import * as searchCode from "./tools/search_code.js";
+import * as think from "./tools/think.js";
 
-const TOOL_MODULES = [readFiles, createFile, applyPatch, listDir, webSearch, searchCode];
+const TOOL_MODULES = [think, readFiles, createFile, applyPatch, listDir, webSearch, searchCode];
 const TOOL_MAP = Object.fromEntries(TOOL_MODULES.map((module) => [module.NAME, module]));
 
 function buildLangChainDescription(module) {

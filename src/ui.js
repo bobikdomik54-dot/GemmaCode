@@ -142,6 +142,7 @@ export async function handleCommand(rawInput) {
         return true;
       }
       state.projectDir = path.resolve(value);
+      state.scannedProjectDir = null;
       console.log(ui.ok(`Project dir set to: ${state.projectDir}`));
       saveHistory();
       return true;

@@ -22,13 +22,10 @@ SERVER_WS = os.environ.get("SERVER_WS", f"ws://{SERVER_IP}:{SERVER_PORT}/ai-conn
 SERVER_API_KEY = os.environ.get("SERVER_API_KEY", "sk-gemma4code-relay-key-2025")
 KOBOLD_URL = os.environ.get("KOBOLD_URL", "http://localhost:5001/v1/chat/completions")
 KOBOLD_MODEL = os.environ.get("KOBOLD_MODEL", "koboldcpp")
-EMBED_MODEL_NAME = os.environ.get("EMBED_MODEL_NAME", "sentence-transformers/all-MiniLM-L6-v2")
-EMBED_BATCH_SIZE = int(os.environ.get("EMBED_BATCH_SIZE", "32"))
 
 job_queue = queue.Queue()
 result_queue = queue.Queue()
 cancel_event = threading.Event()
-embedding_model = None
 proc = None
 
 
@@ -157,16 +154,6 @@ def normalize_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return normalized
 
 
-def get_embedding_model():
-    global embedding_model
-    if embedding_model is None:
-        print(f"[EMBED] Loading embedding model: {EMBED_MODEL_NAME}")
-        from sentence_transformers import SentenceTransformer
-
-        embedding_model = SentenceTransformer(EMBED_MODEL_NAME)
-    return embedding_model
-
-
 def merge_tool_calls(existing: list[dict[str, Any]], delta_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
     merged = [json.loads(json.dumps(item)) for item in existing]
 
@@ -207,20 +194,6 @@ def build_openai_chunk(msg_id: str, model: str, delta: dict[str, Any], finish_re
     }
 
 
-def build_embedding_response(msg_id: str, model: str, vectors: list[list[float]], inputs: list[str]) -> dict[str, Any]:
-    total_tokens = sum(max(1, len(text.split())) for text in inputs)
-    return {
-        "object": "list",
-        "model": model,
-        "data": [{"object": "embedding", "index": index, "embedding": vector} for index, vector in enumerate(vectors)],
-        "usage": {
-            "prompt_tokens": total_tokens,
-            "total_tokens": total_tokens,
-        },
-        "id": f"embd-{msg_id[:8]}",
-    }
-
-
 def ai_worker_thread():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -244,8 +217,6 @@ async def ai_worker_loop():
         try:
             if job.get("type") == "generate":
                 await handle_generate_job(session, job)
-            elif job.get("type") == "embed":
-                await handle_embed_job(job)
         except Exception as error:
             traceback.print_exc()
             if job.get("type") == "generate":
@@ -259,15 +230,6 @@ async def ai_worker_loop():
                         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
                         "epoch": job["epoch"],
                         "error": str(error),
-                    }
-                )
-            else:
-                result_queue.put(
-                    {
-                        "type": "embedding_result",
-                        "id": job["id"],
-                        "result": {"error": {"message": str(error)}},
-                        "epoch": job["epoch"],
                     }
                 )
 
@@ -351,27 +313,6 @@ async def handle_generate_job(session: aiohttp.ClientSession, job: dict[str, Any
             "tool_calls": merged_tool_calls,
             "finish_reason": finish_reason,
             "usage": usage,
-            "epoch": epoch,
-        }
-    )
-
-
-async def handle_embed_job(job: dict[str, Any]):
-    msg_id = job["id"]
-    epoch = job["epoch"]
-    model = job.get("model", "local-embedding")
-    raw_input = job.get("input", "")
-    inputs = raw_input if isinstance(raw_input, list) else [raw_input]
-    inputs = [normalize_text_content(item) for item in inputs]
-
-    embedder = get_embedding_model()
-    vectors = embedder.encode(inputs, batch_size=EMBED_BATCH_SIZE, normalize_embeddings=True).tolist()
-
-    result_queue.put(
-        {
-            "type": "embedding_result",
-            "id": msg_id,
-            "result": build_embedding_response(msg_id, model, vectors, inputs),
             "epoch": epoch,
         }
     )
@@ -473,7 +414,7 @@ async def network_main():
                         continue
 
                     msg_type = msg.get("type")
-                    if msg_type in {"generate", "embed"}:
+                    if msg_type == "generate":
                         job = dict(msg)
                         job["epoch"] = epoch
                         job_queue.put(job)
@@ -516,7 +457,7 @@ def main():
     print("=" * 60)
     print("Gemma Colab Worker")
     print("  [main] websocket transport")
-    print("  [worker] generation + embeddings")
+    print("  [worker] generation")
     print("=" * 60)
 
     ai_thread = threading.Thread(target=ai_worker_thread, daemon=True, name="ai-worker")

@@ -1,0 +1,9 @@
+{
+  "name": "gemma4code-client",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "gemma4code": "./index.js"
+  }
+}

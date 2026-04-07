@@ -1,0 +1,6 @@
+fastapi
+uvicorn[standard]
+aiohttp
+websockets
+nest_asyncio
+requests

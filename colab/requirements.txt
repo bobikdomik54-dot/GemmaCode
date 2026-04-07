@@ -1,5 +1,0 @@
-aiohttp
-nest_asyncio
-requests
-sentence-transformers
-websockets

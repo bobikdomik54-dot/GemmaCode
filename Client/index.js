@@ -150,6 +150,14 @@ async function interactiveLoop() {
       console.log(`[CTX] active directory: ${path.relative(workspaceRoot, activeBaseDir) || '.'}`);
       continue;
     }
+    if (trimmed === '/help' || trimmed === 'help') {
+      printHelp();
+      continue;
+    }
+    if (trimmed === '/tools') {
+      printToolCapabilities();
+      continue;
+    }
     if (trimmed === 'exit' || trimmed === 'quit' || trimmed === ':q') {
       rl.close();
       break;
@@ -180,6 +188,20 @@ async function runTurn(userInput) {
     });
 
     if (result.toolCalls.length) {
+      const violation = validateToolBatchStrict(turnPolicy, result.toolCalls, step);
+      if (violation) {
+        messages.push({ role: 'assistant', content: result.content });
+        messages.push({ role: 'user', content: violation });
+        await appendDebug('turn_tool_policy_violation', {
+          turnId,
+          step,
+          violation,
+          toolCalls: summarizeToolCalls(result.toolCalls),
+        });
+        console.log('[PROTO] rejected tool batch: policy violation');
+        continue;
+      }
+
       messages.push({
         role: 'assistant',
         content: result.content,
@@ -666,34 +688,26 @@ function mergeToolCalls(existing, deltaCalls) {
 
 function buildSystemPrompt() {
   return [
-    'You are a production-grade coding agent for this repository.',
-    'Your job is to inspect, plan, modify, verify, and finish tasks without hand-holding.',
-    'When file work is needed, use tools instead of narrating the steps.',
-    'Multiple tool calls in one assistant turn are allowed and preferred when they are independent.',
-    'For example, you may emit several Readfile calls for different chunks, or several Apply_patch/CreateFile calls for separate files, in the same assistant message.',
-    'Readfile is observation only. It never changes a file, never proves a file changed, and must never be used as if it were a write tool.',
-    'Apply_patch is the only tool that edits an existing file.',
-    'CreateFile is the only tool that creates a brand-new file.',
-    'dir is discovery only. It reveals tree shape, not file contents.',
-    'Use a tool call immediately when the user wants inspection, creation, or edits.',
-    'Do not output tool syntax, raw JSON, pseudo-tool blocks, or tool markup in normal assistant text.',
-    'Do not claim a file was modified until a write tool confirms it.',
-    'Do not claim verification until you actually re-read the file or otherwise inspect the result.',
-    'Recommended workflow:',
-    '- inspect the workspace with dir',
-    '- read the relevant file chunks with Readfile',
-    '- patch only the exact line ranges that need changes',
-    '- read the same region again to verify',
-    '- continue until the task is complete',
-    'Behavior rules:',
-    '- Prefer the smallest correct set of tools, but do not artificially limit yourself to one tool call per turn.',
-    '- If several files must change, you may change them in sequence without waiting for a user reply.',
-    '- If a task is ambiguous, inspect first and decide from repository evidence.',
-    '- Use concise assistant text only when no tool is needed or after all tool work is complete.',
-    '- In the CLI, /dir <path> changes the active base folder before you ask for edits.',
-    '- File paths are relative to the workspace root unless absolute paths are explicitly needed.',
-    '- Readfile chunks are 300 lines each and are numbered from 0.',
-    '- Keep tool calls targeted and deterministic.',
+    'You are GemmaCode Client Agent, a production coding assistant for this repository.',
+    'You must reason from repository evidence, not assumptions.',
+    'When the user asks for code changes, always follow this exact order:',
+    '1) dir (understand repository shape first)',
+    '2) Readfile (inspect relevant files/chunks)',
+    '3) Apply_patch/CreateFile (perform changes)',
+    '4) Readfile (verify resulting lines)',
+    'Use tools instead of narrating planned actions.',
+    'Readfile is observation only and never edits files.',
+    'Apply_patch is the only tool that edits existing files.',
+    'CreateFile is the only tool that creates new files.',
+    'dir is discovery only and does not return file contents.',
+    'Multiple tool calls in one assistant turn are allowed when they are independent and deterministic.',
+    'Never output pseudo-tools, JSON tool markup, or fake tool syntax in normal text.',
+    'Never claim a change happened until a write tool succeeds.',
+    'Never claim verification happened until Readfile confirms the changed region.',
+    'If task intent is ambiguous, inspect first, then decide based on observed files.',
+    'Keep assistant prose short and only after required tool work is complete.',
+    'Paths are relative to workspace root (or active /dir context).',
+    'Readfile chunk size is 300 lines with 0-based chunkIndex.',
   ].join('\n');
 }
 
@@ -1003,7 +1017,26 @@ function printBanner() {
   console.log('Gemma4Code CLI Agent');
   console.log('Tools: Readfile, Apply_patch, CreateFile, dir');
   console.log(`Active dir: ${path.relative(workspaceRoot, activeBaseDir) || '.'}`);
+  console.log('Tip: use /help for commands and /tools for tool contracts');
   console.log('========================================');
+}
+
+function printHelp() {
+  console.log('Commands:');
+  console.log('  /help           show this message');
+  console.log('  /tools          show tool capabilities and limits');
+  console.log('  /dir            show active directory');
+  console.log('  /dir <path>     switch active directory inside workspace');
+  console.log('  exit | quit     close client');
+}
+
+function printToolCapabilities() {
+  console.log('Tool capabilities:');
+  console.log('  dir         -> recursive tree listing only (no file contents)');
+  console.log('  Readfile    -> reads 300-line chunk by chunkIndex');
+  console.log('  Apply_patch -> edits existing file by line range');
+  console.log('  CreateFile  -> creates brand-new file, never overwrites');
+  console.log('Recommended order: dir -> Readfile -> write -> Readfile verify');
 }
 
 main().catch((error) => {
@@ -1096,6 +1129,32 @@ async function buildTurnPolicyStrict(userInput) {
     requiredTool: 'none',
   };
 }
+
+function validateToolBatchStrict(turnPolicy, toolCalls, step) {
+  if (!Array.isArray(toolCalls) || toolCalls.length === 0) {
+    return null;
+  }
+
+  const toolNames = toolCalls.map((call) => call?.function?.name || '');
+
+  if (turnPolicy.mode !== 'chat' && step === 0 && toolNames.includes('Apply_patch')) {
+    return [
+      'Tool order violation: Apply_patch cannot be the first action.',
+      'First inspect repository state with dir/Readfile, then patch.',
+      'Send corrected tool calls now.',
+    ].join('\n');
+  }
+
+  if (toolNames.includes('CreateFile') && toolNames.includes('Apply_patch')) {
+    return [
+      'Tool batch violation: do not mix CreateFile and Apply_patch in the same assistant tool batch.',
+      'Create the file first in one step, then patch it in the next step if needed.',
+      'Send corrected tool calls now.',
+    ].join('\n');
+  }
+
+  return null;
+}
 async function runTurnStrict(userInput) {
   const turnId = createTurnId();
   const turnPolicy = await buildTurnPolicyStrict(userInput);
@@ -1121,6 +1180,20 @@ async function runTurnStrict(userInput) {
     });
 
     if (result.toolCalls.length) {
+      const violation = validateToolBatchStrict(turnPolicy, result.toolCalls, step);
+      if (violation) {
+        messages.push({ role: 'assistant', content: result.content });
+        messages.push({ role: 'user', content: violation });
+        await appendDebug('turn_tool_policy_violation', {
+          turnId,
+          step,
+          violation,
+          toolCalls: summarizeToolCalls(result.toolCalls),
+        });
+        console.log('[PROTO] rejected tool batch: policy violation');
+        continue;
+      }
+
       messages.push({
         role: 'assistant',
         content: result.content,
